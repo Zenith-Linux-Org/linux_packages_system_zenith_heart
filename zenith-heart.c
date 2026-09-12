@@ -130,19 +130,19 @@ static int pivot_to_erofs(void) {
 
 static void mount_proc(void) {
     mkdir("/proc", 0755);
-    if (mount("proc", "/proc", "proc", 0, NULL) < 0)
+    if (mount("proc", "/proc", "proc", 0, NULL) < 0 && errno != EBUSY)
         fprintf(stderr, "zenith-heart: mount /proc failed: %s\n", strerror(errno));
 }
 
 static void mount_sys(void) {
     mkdir("/sys", 0755);
-    if (mount("sysfs", "/sys", "sysfs", 0, NULL) < 0)
+    if (mount("sysfs", "/sys", "sysfs", 0, NULL) < 0 && errno != EBUSY)
         fprintf(stderr, "zenith-heart: mount /sys failed: %s\n", strerror(errno));
 }
 
 static void mount_dev(void) {
     mkdir("/dev", 0755);
-    if (mount("devtmpfs", "/dev", "devtmpfs", 0, NULL) < 0)
+    if (mount("devtmpfs", "/dev", "devtmpfs", 0, NULL) < 0 && errno != EBUSY)
         fprintf(stderr, "zenith-heart: mount /dev failed: %s\n", strerror(errno));
 }
 
@@ -186,6 +186,9 @@ int main(void) {
     mount_dev();
 
     setup_sanitizers();
+
+    setenv("PATH", "/bin:/sbin:/usr/bin:/usr/sbin:/usr/libexec", 1);
+    setenv("HOME", "/root", 1);
 
     mkdir("/run", 0755);
     mkdir("/tmp", 0755);
