@@ -12,7 +12,8 @@
 #include <linux/reboot.h>
 #include <sys/reboot.h>
 #include <stdnoreturn.h>
-#include <dirent.h>
+#include <sys/ioctl.h>
+#include <linux/loop.h>
 
 static int pivot_to_erofs(void) {
     struct stat st;
@@ -82,7 +83,29 @@ static int pivot_to_erofs(void) {
     umount("/media");
 
     mkdir("/newroot", 0755);
-    if (mount("/tmp/rootfs.erofs", "/newroot", "erofs", MS_RDONLY, NULL) < 0) {
+
+    // Set up loop device for erofs image
+    int file_fd = open("/tmp/rootfs.erofs", O_RDONLY);
+    if (file_fd < 0) {
+        fprintf(stderr, "zenith-heart: open rootfs.erofs failed: %s\n", strerror(errno));
+        return -1;
+    }
+    int loop_fd = open("/dev/loop0", O_RDWR);
+    if (loop_fd < 0) {
+        fprintf(stderr, "zenith-heart: open /dev/loop0 failed: %s\n", strerror(errno));
+        close(file_fd);
+        return -1;
+    }
+    if (ioctl(loop_fd, LOOP_SET_FD, file_fd) < 0) {
+        fprintf(stderr, "zenith-heart: LOOP_SET_FD failed: %s\n", strerror(errno));
+        close(loop_fd);
+        close(file_fd);
+        return -1;
+    }
+    close(file_fd);
+    close(loop_fd);
+
+    if (mount("/dev/loop0", "/newroot", "erofs", MS_RDONLY, NULL) < 0) {
         fprintf(stderr, "zenith-heart: mount erofs failed: %s\n", strerror(errno));
         return -1;
     }
