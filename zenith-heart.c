@@ -12,6 +12,98 @@
 #include <linux/reboot.h>
 #include <sys/reboot.h>
 #include <stdnoreturn.h>
+#include <dirent.h>
+
+static int pivot_to_erofs(void) {
+    struct stat st;
+    if (stat("/proc/1/exe", &st) == 0) {
+        char link[256];
+        ssize_t len = readlink("/proc/1/exe", link, sizeof(link) - 1);
+        if (len > 0) {
+            link[len] = '\0';
+            if (strstr(link, "zenith-heart"))
+                return 0;
+        }
+    }
+
+    mkdir("/proc", 0755);
+    mount("proc", "/proc", "proc", 0, NULL);
+    mkdir("/sys", 0755);
+    mount("sysfs", "/sys", "sysfs", 0, NULL);
+    mkdir("/dev", 0755);
+    mount("devtmpfs", "/dev", "devtmpfs", 0, NULL);
+    mkdir("/tmp", 0755);
+    mount("tmpfs", "/tmp", "tmpfs", 0, NULL);
+
+    const char *devs[] = {"/dev/sr0", "/dev/sr1", "/dev/vda", "/dev/vdb",
+                          "/dev/sda", "/dev/sdb", NULL};
+    mkdir("/media", 0755);
+    int found = 0;
+    for (int i = 0; devs[i]; i++) {
+        if (mount(devs[i], "/media", "iso9660", MS_RDONLY, NULL) == 0) {
+            found = 1;
+            break;
+        }
+        if (mount(devs[i], "/media", "vfat", MS_RDONLY, NULL) == 0) {
+            found = 1;
+            break;
+        }
+    }
+
+    if (!found) {
+        fprintf(stderr, "zenith-heart: no boot media found\n");
+        return -1;
+    }
+
+    FILE *f = fopen("/media/boot/rootfs.erofs", "rb");
+    if (!f) {
+        fprintf(stderr, "zenith-heart: rootfs.erofs not found on media\n");
+        umount("/media");
+        return -1;
+    }
+    fclose(f);
+
+    fprintf(stderr, "zenith-heart: copying rootfs.erofs to tmpfs...\n");
+    int in_fd = open("/media/boot/rootfs.erofs", O_RDONLY);
+    int out_fd = open("/tmp/rootfs.erofs", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (in_fd < 0 || out_fd < 0) {
+        fprintf(stderr, "zenith-heart: failed to open rootfs files\n");
+        if (in_fd >= 0) close(in_fd);
+        if (out_fd >= 0) close(out_fd);
+        umount("/media");
+        return -1;
+    }
+    char buf[65536];
+    ssize_t n;
+    while ((n = read(in_fd, buf, sizeof(buf))) > 0)
+        write(out_fd, buf, n);
+    close(in_fd);
+    close(out_fd);
+    umount("/media");
+
+    mkdir("/newroot", 0755);
+    if (mount("/tmp/rootfs.erofs", "/newroot", "erofs", MS_RDONLY, NULL) < 0) {
+        fprintf(stderr, "zenith-heart: mount erofs failed: %s\n", strerror(errno));
+        return -1;
+    }
+
+    mkdir("/newroot/proc", 0755);
+    mkdir("/newroot/sys", 0755);
+    mkdir("/newroot/dev", 0755);
+    mkdir("/newroot/tmp", 0755);
+
+    mount("/proc", "/newroot/proc", "proc", 0, NULL);
+    mount("/sys", "/newroot/sys", "sysfs", 0, NULL);
+    mount("/dev", "/newroot/dev", "devtmpfs", 0, NULL);
+    mount("/tmp", "/newroot/tmp", "tmpfs", 0, NULL);
+
+    if (chroot("/newroot") < 0) {
+        fprintf(stderr, "zenith-heart: chroot failed: %s\n", strerror(errno));
+        return -1;
+    }
+    chdir("/");
+    return 1;
+}
 
 static void mount_proc(void) {
     mkdir("/proc", 0755);
@@ -56,6 +148,14 @@ static pid_t spawn_service(const char *path, char *const argv[]) {
 
 int main(void) {
     fprintf(stderr, "zenith-heart: PID 1 starting\n");
+
+    int pivoted = pivot_to_erofs();
+    if (pivoted > 0) {
+        fprintf(stderr, "zenith-heart: pivoted to EROFS root\n");
+        execv("/bin/zenith-heart", (char *const[]){"zenith-heart", NULL});
+        fprintf(stderr, "zenith-heart: exec self failed: %s\n", strerror(errno));
+        _exit(1);
+    }
 
     // ASan needs /proc/self/maps
     mount_proc();
