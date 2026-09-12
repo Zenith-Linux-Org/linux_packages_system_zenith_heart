@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,8 +12,6 @@
 #include <linux/reboot.h>
 #include <sys/reboot.h>
 #include <stdnoreturn.h>
-
-// --- Mount early filesystems ---
 
 static void mount_proc(void) {
     mkdir("/proc", 0755);
@@ -43,8 +42,6 @@ static void setup_sanitizers(void) {
     mkdir("/var/log", 0755);
 }
 
-// --- Service spawning ---
-
 static pid_t spawn_service(const char *path, char *const argv[]) {
     pid_t pid = fork();
     if (pid == 0) {
@@ -57,28 +54,16 @@ static pid_t spawn_service(const char *path, char *const argv[]) {
     return pid;
 }
 
-__attribute__((unused)) static void wait_for(pid_t pid, const char *name) {
-    int status;
-    waitpid(pid, &status, 0);
-    if (WIFEXITED(status) && WEXITSTATUS(status) != 0)
-        fprintf(stderr, "zenith-heart: %s exited %d\n", name, WEXITSTATUS(status));
-}
-
-// --- Main init sequence ---
-
 int main(void) {
-    // PID 1 — never exit
     fprintf(stderr, "zenith-heart: PID 1 starting\n");
 
-    // Phase 1: early mounts (ASan needs /proc/self/maps)
+    // ASan needs /proc/self/maps
     mount_proc();
     mount_sys();
     mount_dev();
 
-    // Phase 2: sanitizer env
     setup_sanitizers();
 
-    // Phase 3: create required dirs
     mkdir("/run", 0755);
     mkdir("/tmp", 0755);
     mkdir("/var/log", 0755);
@@ -86,49 +71,36 @@ int main(void) {
     mkdir("/usr/lib", 0755);
     mkdir("/usr/share/models", 0755);
 
-    // Phase 4: spawn system services
     fprintf(stderr, "zenith-heart: spawning services\n");
 
-    // ALSA — load sound modules
     char *const alsa_argv[] = {"alsactl", "restore", "-f",
                                "/usr/share/alsa/alsa.conf", NULL};
     spawn_service("alsactl", alsa_argv);
 
-    // iwd — wireless daemon
     char *const iwd_argv[] = {"iwd", NULL};
     spawn_service("iwd", iwd_argv);
 
-    // wpa_supplicant (alternative to iwd)
-    // char *const wpa_argv[] = {"wpa_supplicant", "-i", "wlan0",
-    //                          "-c", "/etc/wpa_supplicant.conf", NULL};
-    // spawn_service("wpa_supplicant", wpa_argv);
-
-    // llama-server — AI daemon (GPU probe first)
     char *const llama_argv[] = {"llama-server",
                                 "-m", "/usr/share/models/qwen-1.7b-q4_k_m.gguf",
                                 "--host", "127.0.0.1",
                                 "--port", "8080",
-                                "--gpu-layers", "0",  // default CPU
+                                "--gpu-layers", "0",
                                 "--threads", "4",
                                 NULL};
     spawn_service("llama-server", llama_argv);
 
     fprintf(stderr, "zenith-heart: services launched\n");
 
-    // Phase 5: graphical session
-    // Try nanox first, fall back to fish shell
     fprintf(stderr, "zenith-heart: starting session\n");
 
     char *const nanox_argv[] = {"nanox", NULL};
     pid_t session = spawn_service("nanox", nanox_argv);
 
-    // If nanox fails, start fish shell
     if (session < 0) {
         char *const fish_argv[] = {"fish", NULL};
         spawn_service("fish", fish_argv);
     }
 
-    // Phase 6: PID 1 reap loop — never exit
     fprintf(stderr, "zenith-heart: entering reap loop\n");
     while (1) {
         int status;
@@ -145,5 +117,5 @@ int main(void) {
                     pid, WTERMSIG(status));
     }
 
-    return 0;  // unreachable
+    _exit(0);
 }
