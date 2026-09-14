@@ -14,13 +14,8 @@
 #include <stdnoreturn.h>
 #include <sys/ioctl.h>
 #include <linux/loop.h>
-#include <sys/utsname.h>
-#include <sys/syscall.h>
 #include <dirent.h>
-
-static inline int finit_module(int fd, const char *params, unsigned int flags) {
-    return (int)syscall(__NR_finit_module, fd, params, flags);
-}
+#include <sys/utsname.h>
 
 static void load_boot_modules(void) {
     const char *modules[] = {
@@ -32,23 +27,15 @@ static void load_boot_modules(void) {
         NULL
     };
 
-    struct utsname uts;
-    if (uname(&uts) < 0) return;
-
-    char modpath[256];
-    snprintf(modpath, sizeof(modpath), "/lib/modules/%s", uts.release);
-
     for (int i = 0; modules[i]; i++) {
-        char path[512];
-        snprintf(path, sizeof(path), "%s/%s.ko", modpath, modules[i]);
-        if (access(path, F_OK) == 0) {
-            int fd = open(path, O_RDONLY | O_CLOEXEC);
-            if (fd >= 0) {
-                if (finit_module(fd, "", 0) != 0)
-                    fprintf(stderr, "zenith-heart: insmod %s failed: %s\n",
-                            modules[i], strerror(errno));
-                close(fd);
-            }
+        pid_t pid = fork();
+        if (pid == 0) {
+            execl("/bin/modprobe", "modprobe", modules[i], NULL);
+            _exit(127);
+        }
+        if (pid > 0) {
+            int status;
+            waitpid(pid, &status, 0);
         }
     }
 }
@@ -318,14 +305,20 @@ static void cmd_ps(void) {
 }
 
 static void cmd_insmod(int argc, char **argv) {
-    if (argc < 2) { fprintf(stderr, "insmod: usage: insmod <file.ko>\n"); return; }
-    int fd = open(argv[1], O_RDONLY | O_CLOEXEC);
-    if (fd < 0) { fprintf(stderr, "insmod: %s: %s\n", argv[1], strerror(errno)); return; }
-    if (finit_module(fd, "", 0) != 0)
-        fprintf(stderr, "insmod: %s: %s\n", argv[1], strerror(errno));
-    else
-        fprintf(stderr, "insmod: %s loaded\n", argv[1]);
-    close(fd);
+    if (argc < 2) { fprintf(stderr, "insmod: usage: insmod <module>\n"); return; }
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/bin/modprobe", "modprobe", argv[1], NULL);
+        _exit(127);
+    }
+    if (pid > 0) {
+        int status;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
+            fprintf(stderr, "insmod: %s loaded\n", argv[1]);
+        else
+            fprintf(stderr, "insmod: %s failed\n", argv[1]);
+    }
 }
 
 static void emergency_shell(void) {
